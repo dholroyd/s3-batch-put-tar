@@ -3,6 +3,8 @@ name = "s3-batch-put-tar"
 version = "0.1.0"
 authors = ["David Holroyd <dave@badgers-in-foil.co.uk>"]
 edition = "2018"
+license = "MIT/Apache-2.0"
+description = "Gather many objects into a smaller number of s3:PutObject calls"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
