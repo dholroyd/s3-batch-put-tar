@@ -1,12 +1,11 @@
-
-use rusoto_s3;
-use tar;
-use std::io;
-use std::io::{Seek, Read};
 use log::*;
-use std::sync::mpsc::TrySendError;
-use serde_derive::Serialize;
 use rusoto_core::RusotoError;
+use rusoto_s3;
+use serde_derive::Serialize;
+use std::io;
+use std::io::{Read, Seek};
+use std::sync::mpsc::TrySendError;
+use tar;
 
 struct Batch<W: io::Write + io::Seek> {
     start_time_ms: u64,
@@ -16,11 +15,15 @@ impl<W: io::Write + io::Seek> Batch<W> {
     pub fn new(start_time_ms: u64, output: W) -> Batch<W> {
         Batch {
             start_time_ms,
-            output: tar::Builder::new(output)
+            output: tar::Builder::new(output),
         }
     }
     pub fn put_object(&mut self, write: QueuedWrite) -> io::Result<()> {
-        let pos = self.output.get_mut().seek(io::SeekFrom::Current(0)).unwrap();
+        let pos = self
+            .output
+            .get_mut()
+            .seek(io::SeekFrom::Current(0))
+            .unwrap();
         assert_eq!(pos, write.put_ref.offset_bytes as u64);
         let mut header = tar::Header::new_old();
         let h = &mut header;
@@ -32,7 +35,11 @@ impl<W: io::Write + io::Seek> Batch<W> {
         // after filling header fields; calculate header checksum
         h.set_cksum();
         self.output.append(&header, &write.input.body[..])?;
-        let pos = self.output.get_mut().seek(io::SeekFrom::Current(0)).unwrap();
+        let pos = self
+            .output
+            .get_mut()
+            .seek(io::SeekFrom::Current(0))
+            .unwrap();
         assert!(pos >= (write.put_ref.offset_bytes + write.put_ref.size_bytes) as u64);
         Ok(())
     }
@@ -44,7 +51,9 @@ impl<W: io::Write + io::Seek> Batch<W> {
 
 #[derive(Debug)]
 pub enum BatchPutObjectError {
-    NameTooLong { length: usize },
+    NameTooLong {
+        length: usize,
+    },
     /// No more put-object operations could be submitted because the submission queue is already
     /// full.
     QueueFull,
@@ -84,7 +93,7 @@ impl<Client: rusoto_s3::S3> BatchProcessor<Client> {
             bucket,
             rt,
             key_prefix,
-            storage_class
+            storage_class,
         }
     }
     pub fn process(self) {
@@ -125,9 +134,11 @@ impl<Client: rusoto_s3::S3> BatchProcessor<Client> {
                         }
                     };
                     let mut batch = current_batch.take().unwrap();
-                    let (res, batch) = self.rt.spawn_blocking(move || {
-                        (batch.put_object(req), batch)
-                    } ).await.unwrap();
+                    let (res, batch) = self
+                        .rt
+                        .spawn_blocking(move || (batch.put_object(req), batch))
+                        .await
+                        .unwrap();
                     if let Err(e) = res {
                         error!("failure to write batch-object: {:?}", e);
                         // presume this batch is in some way compromised (e.g. out of disk space)
@@ -137,11 +148,13 @@ impl<Client: rusoto_s3::S3> BatchProcessor<Client> {
                     } else {
                         current_batch = Some(batch);
                     }
-                },
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if current_batch.is_some() {
                         let now = std::time::SystemTime::now();
-                        let utc = now.duration_since(std::time::UNIX_EPOCH).expect("duration_since()");
+                        let utc = now
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("duration_since()");
                         let batch_start = self.batch_start_ms(utc);
                         if batch_start > current_batch.as_ref().unwrap().start_time_ms {
                             let last = current_batch.take().unwrap();
@@ -150,10 +163,8 @@ impl<Client: rusoto_s3::S3> BatchProcessor<Client> {
                             }
                         }
                     }
-                },
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    break
                 }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     }
@@ -181,12 +192,13 @@ impl<Client: rusoto_s3::S3> BatchProcessor<Client> {
                             error!("put_object() failed on attempt {}: {:?}", attempt, err);
                         }
                     } else {
-                        return Err(io::Error::new(io::ErrorKind::Other, e))
+                        return Err(io::Error::new(io::ErrorKind::Other, e));
                     }
                 }
             }
             // wait for 100ms, 200ms
-            tokio::time::delay_for(std::time::Duration::from_millis(100 * (2_u64.pow(attempt)))).await;
+            tokio::time::delay_for(std::time::Duration::from_millis(100 * (2_u64.pow(attempt))))
+                .await;
         }
     }
 
@@ -201,14 +213,14 @@ struct QueuedWrite {
     // the *actual* file layout matches the byte-offset values we had predicted
     put_ref: BatchObjectRef,
     input: BatchPutObjectRequest,
-    write_time: std::time::Duration
+    write_time: std::time::Duration,
 }
 
 struct Coalesce {
     last_batch_id: Option<u64>,
     batch_duration_ms: u64,
     next_write_offset_bytes: usize,
-    tx: std::sync::mpsc::SyncSender<QueuedWrite>
+    tx: std::sync::mpsc::SyncSender<QueuedWrite>,
 }
 impl Coalesce {
     const TAR_BLOCK_SIZE: usize = 512;
@@ -221,9 +233,14 @@ impl Coalesce {
             tx,
         }
     }
-    pub fn put_object(&mut self, input: BatchPutObjectRequest) -> Result<BatchObjectRef, BatchPutObjectError> {
+    pub fn put_object(
+        &mut self,
+        input: BatchPutObjectRequest,
+    ) -> Result<BatchObjectRef, BatchPutObjectError> {
         let now = std::time::SystemTime::now();
-        let utc = now.duration_since(std::time::UNIX_EPOCH).expect("duration_since()");
+        let utc = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("duration_since()");
         let this_batch_id = self.batch_start_ms(utc);
 
         if self.last_batch_id.is_none() {
@@ -240,13 +257,19 @@ impl Coalesce {
             offset_bytes: self.next_write_offset_bytes,
             size_bytes: size,
         };
-        let tar_space_required = Self::TAR_BLOCK_SIZE + size + if size % Self::TAR_BLOCK_SIZE == 0 { 0 } else { Self::TAR_BLOCK_SIZE - size % Self::TAR_BLOCK_SIZE };
+        let tar_space_required = Self::TAR_BLOCK_SIZE
+            + size
+            + if size % Self::TAR_BLOCK_SIZE == 0 {
+                0
+            } else {
+                Self::TAR_BLOCK_SIZE - size % Self::TAR_BLOCK_SIZE
+            };
         self.next_write_offset_bytes += tar_space_required;
 
         let write = QueuedWrite {
             put_ref: put_ref.clone(),
             write_time: utc,
-            input
+            input,
         };
         match self.tx.try_send(write) {
             Ok(_) => Ok(put_ref),
@@ -276,7 +299,10 @@ impl S3BatchPutClient {
     /// Batches are written do disk before being uploaded to S3.  The writing to disk and eventual
     /// upload to S3 will be performed on another thread, therefore this method does not block the
     /// caller or need to be `await`ed.
-    pub fn put_object(&mut self, input: BatchPutObjectRequest) -> Result<BatchObjectRef, BatchPutObjectError> {
+    pub fn put_object(
+        &mut self,
+        input: BatchPutObjectRequest,
+    ) -> Result<BatchObjectRef, BatchPutObjectError> {
         self.inner.lock().unwrap().put_object(input)
     }
 }
@@ -292,7 +318,6 @@ pub struct BatchObjectRef {
     pub offset_bytes: usize,
     pub size_bytes: usize,
 }
-
 
 pub struct ClientBuilder<Client: rusoto_s3::S3> {
     batch_duration: Option<u64>,
@@ -315,7 +340,6 @@ impl<Client: rusoto_s3::S3> Default for ClientBuilder<Client> {
     }
 }
 impl<Client: rusoto_s3::S3 + Send + 'static> ClientBuilder<Client> {
-
     pub fn batch_duration(mut self, batch_duration: u64) -> Self {
         self.batch_duration = Some(batch_duration);
         self
@@ -351,19 +375,21 @@ impl<Client: rusoto_s3::S3 + Send + 'static> ClientBuilder<Client> {
         let (tx, rx) = std::sync::mpsc::sync_channel(30);
         let proc = BatchProcessor::new(
             rx,
-            self.batch_duration.ok_or_else(|| BuildError::MissingBatchDuration )? as _,
-            self.client.ok_or_else(|| BuildError::MissingS3Client )?,
-            self.bucket.ok_or_else(|| BuildError::MissingBucket )?,
+            self.batch_duration
+                .ok_or_else(|| BuildError::MissingBatchDuration)? as _,
+            self.client.ok_or_else(|| BuildError::MissingS3Client)?,
+            self.bucket.ok_or_else(|| BuildError::MissingBucket)?,
             self.key_prefix.unwrap_or("".to_string()),
-            self.rt.ok_or_else(|| BuildError::MissingRuntime )?,
+            self.rt.ok_or_else(|| BuildError::MissingRuntime)?,
             self.storage_class,
         );
-        std::thread::spawn(|| proc.process() );
+        std::thread::spawn(|| proc.process());
         let client = S3BatchPutClient {
             inner: std::sync::Arc::new(std::sync::Mutex::new(Coalesce::new(
-                self.batch_duration.ok_or_else(|| BuildError::MissingBatchDuration)? as _,
+                self.batch_duration
+                    .ok_or_else(|| BuildError::MissingBatchDuration)? as _,
                 tx,
-            )))
+            ))),
         };
         Ok(client)
     }
@@ -379,10 +405,94 @@ pub enum BuildError {
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use super::*;
+    use async_trait::async_trait;
     use rusoto_core::RusotoError;
-    use rusoto_s3::{GetObjectLockConfigurationRequest, PutBucketLifecycleError, UploadPartCopyError, GetBucketLoggingError, HeadObjectRequest, PutObjectError, PutBucketAccelerateConfigurationError, GetBucketCorsOutput, GetObjectRequest, GetBucketLoggingOutput, GetObjectLockConfigurationOutput, GetPublicAccessBlockError, PutObjectTaggingRequest, PutBucketNotificationConfigurationRequest, ListBucketInventoryConfigurationsOutput, AbortMultipartUploadRequest, PutObjectAclRequest, PutBucketVersioningRequest, DeleteObjectError, HeadObjectOutput, GetBucketEncryptionError, HeadBucketError, DeleteBucketReplicationRequest, CompleteMultipartUploadRequest, GetBucketLifecycleConfigurationRequest, GetBucketLocationError, GetBucketCorsError, GetBucketWebsiteRequest, PutBucketTaggingRequest, GetBucketNotificationError, DeleteObjectRequest, PutObjectLockConfigurationError, DeletePublicAccessBlockRequest, ListBucketsOutput, DeleteBucketWebsiteRequest, ListObjectsV2Request, GetBucketLifecycleRequest, ListBucketInventoryConfigurationsError, DeleteBucketCorsError, PutBucketCorsError, DeleteBucketAnalyticsConfigurationRequest, DeleteBucketWebsiteError, GetBucketVersioningOutput, CreateMultipartUploadRequest, ListBucketMetricsConfigurationsRequest, ListObjectVersionsOutput, GetBucketAccelerateConfigurationRequest, CreateMultipartUploadOutput, PutBucketAclError, PutObjectLegalHoldRequest, GetObjectTorrentError, PutBucketLoggingError, PutObjectRetentionOutput, GetBucketPolicyOutput, GetObjectError, UploadPartCopyOutput, ListMultipartUploadsError, PutObjectRetentionRequest, PutBucketLifecycleConfigurationError, ListObjectsError, PutBucketLifecycleConfigurationRequest, CopyObjectError, GetBucketAclError, GetObjectTorrentOutput, PutBucketMetricsConfigurationRequest, DeleteBucketMetricsConfigurationError, PutBucketPolicyRequest, GetBucketRequestPaymentError, RestoreObjectError, DeleteBucketRequest, DeleteBucketAnalyticsConfigurationError, GetBucketTaggingRequest, PutBucketReplicationRequest, GetBucketReplicationRequest, GetObjectLegalHoldRequest, RestoreObjectRequest, GetBucketPolicyStatusError, GetBucketAccelerateConfigurationOutput, GetBucketAclOutput, PutObjectTaggingError, PutObjectAclOutput, NotificationConfigurationDeprecated, PutObjectAclError, GetBucketAccelerateConfigurationError, DeletePublicAccessBlockError, PutBucketVersioningError, DeleteObjectsError, SelectObjectContentRequest, DeleteBucketEncryptionError, GetObjectLegalHoldError, PutObjectTaggingOutput, GetObjectAclRequest, GetBucketEncryptionRequest, PutBucketReplicationError, GetPublicAccessBlockRequest, DeleteObjectTaggingError, AbortMultipartUploadOutput, GetBucketLocationOutput, CreateBucketError, CompleteMultipartUploadError, DeleteBucketEncryptionRequest, HeadBucketRequest, PutObjectLockConfigurationRequest, GetObjectLegalHoldOutput, NotificationConfiguration, GetBucketVersioningRequest, HeadObjectError, DeleteBucketPolicyRequest, DeleteObjectTaggingOutput, GetBucketTaggingError, PutBucketEncryptionRequest, PutBucketLoggingRequest, GetBucketRequestPaymentRequest, PutPublicAccessBlockRequest, GetBucketCorsRequest, UploadPartError, GetBucketMetricsConfigurationOutput, GetBucketReplicationOutput, GetBucketAclRequest, GetBucketEncryptionOutput, PutBucketRequestPaymentRequest, GetBucketPolicyRequest, CopyObjectRequest, DeleteBucketTaggingError, AbortMultipartUploadError, UploadPartCopyRequest, ListObjectsV2Error, PutPublicAccessBlockError, DeleteBucketMetricsConfigurationRequest, GetBucketInventoryConfigurationOutput, GetBucketLifecycleError, GetObjectOutput, CompleteMultipartUploadOutput, GetBucketMetricsConfigurationError, PutBucketCorsRequest, PutBucketWebsiteError, PutBucketEncryptionError, GetObjectTaggingOutput, GetBucketAnalyticsConfigurationError, GetBucketWebsiteOutput, GetBucketWebsiteError, ListBucketAnalyticsConfigurationsOutput, DeleteObjectOutput, GetObjectTaggingRequest, ListBucketInventoryConfigurationsRequest, ListPartsOutput, GetBucketMetricsConfigurationRequest, GetBucketVersioningError, DeleteBucketInventoryConfigurationError, ListObjectsRequest, PutBucketInventoryConfigurationError, DeleteObjectTaggingRequest, ListMultipartUploadsOutput, PutBucketLifecycleRequest, PutBucketAnalyticsConfigurationRequest, DeleteObjectsOutput, ListBucketAnalyticsConfigurationsError, PutObjectOutput, CreateBucketOutput, GetBucketLifecycleOutput, DeleteBucketLifecycleError, DeleteBucketError, PutBucketMetricsConfigurationError, GetBucketAnalyticsConfigurationRequest, UploadPartRequest, RestoreObjectOutput, DeleteBucketCorsRequest, GetBucketInventoryConfigurationError, GetObjectTorrentRequest, GetBucketPolicyError, DeleteObjectsRequest, GetObjectRetentionOutput, DeleteBucketTaggingRequest, GetObjectLockConfigurationError, DeleteBucketPolicyError, ListBucketMetricsConfigurationsOutput, PutBucketNotificationRequest, DeleteBucketLifecycleRequest, PutObjectRetentionError, ListObjectsV2Output, PutBucketNotificationError, PutBucketRequestPaymentError, GetBucketRequestPaymentOutput, CreateMultipartUploadError, ListObjectVersionsError, GetBucketNotificationConfigurationError, GetBucketLoggingRequest, DeleteBucketReplicationError, ListMultipartUploadsRequest, GetBucketAnalyticsConfigurationOutput, ListBucketsError, PutBucketAclRequest, GetBucketInventoryConfigurationRequest, PutBucketNotificationConfigurationError, GetBucketNotificationConfigurationRequest, SelectObjectContentError, SelectObjectContentOutput, GetBucketLifecycleConfigurationOutput, GetBucketPolicyStatusRequest, GetBucketReplicationError, ListPartsRequest, GetObjectAclError, PutBucketPolicyError, GetObjectRetentionRequest, UploadPartOutput, PutObjectLockConfigurationOutput, ListBucketMetricsConfigurationsError, PutBucketWebsiteRequest, GetObjectTaggingError, ListBucketAnalyticsConfigurationsRequest, CopyObjectOutput, DeleteBucketInventoryConfigurationRequest, GetBucketLocationRequest, PutBucketInventoryConfigurationRequest, GetPublicAccessBlockOutput, GetObjectRetentionError, GetBucketTaggingOutput, PutObjectLegalHoldError, PutBucketAccelerateConfigurationRequest, ListObjectsOutput, GetBucketLifecycleConfigurationError, PutBucketAnalyticsConfigurationError, ListPartsError, GetObjectAclOutput, PutObjectRequest, PutObjectLegalHoldOutput, PutBucketTaggingError, CreateBucketRequest, ListObjectVersionsRequest, GetBucketPolicyStatusOutput};
+    use rusoto_s3::{
+        AbortMultipartUploadError, AbortMultipartUploadOutput, AbortMultipartUploadRequest,
+        CompleteMultipartUploadError, CompleteMultipartUploadOutput,
+        CompleteMultipartUploadRequest, CopyObjectError, CopyObjectOutput, CopyObjectRequest,
+        CreateBucketError, CreateBucketOutput, CreateBucketRequest, CreateMultipartUploadError,
+        CreateMultipartUploadOutput, CreateMultipartUploadRequest,
+        DeleteBucketAnalyticsConfigurationError, DeleteBucketAnalyticsConfigurationRequest,
+        DeleteBucketCorsError, DeleteBucketCorsRequest, DeleteBucketEncryptionError,
+        DeleteBucketEncryptionRequest, DeleteBucketError, DeleteBucketInventoryConfigurationError,
+        DeleteBucketInventoryConfigurationRequest, DeleteBucketLifecycleError,
+        DeleteBucketLifecycleRequest, DeleteBucketMetricsConfigurationError,
+        DeleteBucketMetricsConfigurationRequest, DeleteBucketPolicyError,
+        DeleteBucketPolicyRequest, DeleteBucketReplicationError, DeleteBucketReplicationRequest,
+        DeleteBucketRequest, DeleteBucketTaggingError, DeleteBucketTaggingRequest,
+        DeleteBucketWebsiteError, DeleteBucketWebsiteRequest, DeleteObjectError,
+        DeleteObjectOutput, DeleteObjectRequest, DeleteObjectTaggingError,
+        DeleteObjectTaggingOutput, DeleteObjectTaggingRequest, DeleteObjectsError,
+        DeleteObjectsOutput, DeleteObjectsRequest, DeletePublicAccessBlockError,
+        DeletePublicAccessBlockRequest, GetBucketAccelerateConfigurationError,
+        GetBucketAccelerateConfigurationOutput, GetBucketAccelerateConfigurationRequest,
+        GetBucketAclError, GetBucketAclOutput, GetBucketAclRequest,
+        GetBucketAnalyticsConfigurationError, GetBucketAnalyticsConfigurationOutput,
+        GetBucketAnalyticsConfigurationRequest, GetBucketCorsError, GetBucketCorsOutput,
+        GetBucketCorsRequest, GetBucketEncryptionError, GetBucketEncryptionOutput,
+        GetBucketEncryptionRequest, GetBucketInventoryConfigurationError,
+        GetBucketInventoryConfigurationOutput, GetBucketInventoryConfigurationRequest,
+        GetBucketLifecycleConfigurationError, GetBucketLifecycleConfigurationOutput,
+        GetBucketLifecycleConfigurationRequest, GetBucketLifecycleError, GetBucketLifecycleOutput,
+        GetBucketLifecycleRequest, GetBucketLocationError, GetBucketLocationOutput,
+        GetBucketLocationRequest, GetBucketLoggingError, GetBucketLoggingOutput,
+        GetBucketLoggingRequest, GetBucketMetricsConfigurationError,
+        GetBucketMetricsConfigurationOutput, GetBucketMetricsConfigurationRequest,
+        GetBucketNotificationConfigurationError, GetBucketNotificationConfigurationRequest,
+        GetBucketNotificationError, GetBucketPolicyError, GetBucketPolicyOutput,
+        GetBucketPolicyRequest, GetBucketPolicyStatusError, GetBucketPolicyStatusOutput,
+        GetBucketPolicyStatusRequest, GetBucketReplicationError, GetBucketReplicationOutput,
+        GetBucketReplicationRequest, GetBucketRequestPaymentError, GetBucketRequestPaymentOutput,
+        GetBucketRequestPaymentRequest, GetBucketTaggingError, GetBucketTaggingOutput,
+        GetBucketTaggingRequest, GetBucketVersioningError, GetBucketVersioningOutput,
+        GetBucketVersioningRequest, GetBucketWebsiteError, GetBucketWebsiteOutput,
+        GetBucketWebsiteRequest, GetObjectAclError, GetObjectAclOutput, GetObjectAclRequest,
+        GetObjectError, GetObjectLegalHoldError, GetObjectLegalHoldOutput,
+        GetObjectLegalHoldRequest, GetObjectLockConfigurationError,
+        GetObjectLockConfigurationOutput, GetObjectLockConfigurationRequest, GetObjectOutput,
+        GetObjectRequest, GetObjectRetentionError, GetObjectRetentionOutput,
+        GetObjectRetentionRequest, GetObjectTaggingError, GetObjectTaggingOutput,
+        GetObjectTaggingRequest, GetObjectTorrentError, GetObjectTorrentOutput,
+        GetObjectTorrentRequest, GetPublicAccessBlockError, GetPublicAccessBlockOutput,
+        GetPublicAccessBlockRequest, HeadBucketError, HeadBucketRequest, HeadObjectError,
+        HeadObjectOutput, HeadObjectRequest, ListBucketAnalyticsConfigurationsError,
+        ListBucketAnalyticsConfigurationsOutput, ListBucketAnalyticsConfigurationsRequest,
+        ListBucketInventoryConfigurationsError, ListBucketInventoryConfigurationsOutput,
+        ListBucketInventoryConfigurationsRequest, ListBucketMetricsConfigurationsError,
+        ListBucketMetricsConfigurationsOutput, ListBucketMetricsConfigurationsRequest,
+        ListBucketsError, ListBucketsOutput, ListMultipartUploadsError, ListMultipartUploadsOutput,
+        ListMultipartUploadsRequest, ListObjectVersionsError, ListObjectVersionsOutput,
+        ListObjectVersionsRequest, ListObjectsError, ListObjectsOutput, ListObjectsRequest,
+        ListObjectsV2Error, ListObjectsV2Output, ListObjectsV2Request, ListPartsError,
+        ListPartsOutput, ListPartsRequest, NotificationConfiguration,
+        NotificationConfigurationDeprecated, PutBucketAccelerateConfigurationError,
+        PutBucketAccelerateConfigurationRequest, PutBucketAclError, PutBucketAclRequest,
+        PutBucketAnalyticsConfigurationError, PutBucketAnalyticsConfigurationRequest,
+        PutBucketCorsError, PutBucketCorsRequest, PutBucketEncryptionError,
+        PutBucketEncryptionRequest, PutBucketInventoryConfigurationError,
+        PutBucketInventoryConfigurationRequest, PutBucketLifecycleConfigurationError,
+        PutBucketLifecycleConfigurationRequest, PutBucketLifecycleError, PutBucketLifecycleRequest,
+        PutBucketLoggingError, PutBucketLoggingRequest, PutBucketMetricsConfigurationError,
+        PutBucketMetricsConfigurationRequest, PutBucketNotificationConfigurationError,
+        PutBucketNotificationConfigurationRequest, PutBucketNotificationError,
+        PutBucketNotificationRequest, PutBucketPolicyError, PutBucketPolicyRequest,
+        PutBucketReplicationError, PutBucketReplicationRequest, PutBucketRequestPaymentError,
+        PutBucketRequestPaymentRequest, PutBucketTaggingError, PutBucketTaggingRequest,
+        PutBucketVersioningError, PutBucketVersioningRequest, PutBucketWebsiteError,
+        PutBucketWebsiteRequest, PutObjectAclError, PutObjectAclOutput, PutObjectAclRequest,
+        PutObjectError, PutObjectLegalHoldError, PutObjectLegalHoldOutput,
+        PutObjectLegalHoldRequest, PutObjectLockConfigurationError,
+        PutObjectLockConfigurationOutput, PutObjectLockConfigurationRequest, PutObjectOutput,
+        PutObjectRequest, PutObjectRetentionError, PutObjectRetentionOutput,
+        PutObjectRetentionRequest, PutObjectTaggingError, PutObjectTaggingOutput,
+        PutObjectTaggingRequest, PutPublicAccessBlockError, PutPublicAccessBlockRequest,
+        RestoreObjectError, RestoreObjectOutput, RestoreObjectRequest, SelectObjectContentError,
+        SelectObjectContentOutput, SelectObjectContentRequest, UploadPartCopyError,
+        UploadPartCopyOutput, UploadPartCopyRequest, UploadPartError, UploadPartOutput,
+        UploadPartRequest,
+    };
 
     #[derive(Default)]
     struct Mock {
@@ -390,215 +500,403 @@ mod tests {
     }
     #[async_trait]
     impl rusoto_s3::S3 for Mock {
-        async fn abort_multipart_upload(&self, _input: AbortMultipartUploadRequest) -> Result<AbortMultipartUploadOutput, RusotoError<AbortMultipartUploadError>> {
+        async fn abort_multipart_upload(
+            &self,
+            _input: AbortMultipartUploadRequest,
+        ) -> Result<AbortMultipartUploadOutput, RusotoError<AbortMultipartUploadError>> {
             unimplemented!()
         }
 
-        async fn complete_multipart_upload(&self, _input: CompleteMultipartUploadRequest) -> Result<CompleteMultipartUploadOutput, RusotoError<CompleteMultipartUploadError>> {
+        async fn complete_multipart_upload(
+            &self,
+            _input: CompleteMultipartUploadRequest,
+        ) -> Result<CompleteMultipartUploadOutput, RusotoError<CompleteMultipartUploadError>>
+        {
             unimplemented!()
         }
 
-        async fn copy_object(&self, _input: CopyObjectRequest) -> Result<CopyObjectOutput, RusotoError<CopyObjectError>> {
+        async fn copy_object(
+            &self,
+            _input: CopyObjectRequest,
+        ) -> Result<CopyObjectOutput, RusotoError<CopyObjectError>> {
             unimplemented!()
         }
 
-        async fn create_bucket(&self, _input: CreateBucketRequest) -> Result<CreateBucketOutput, RusotoError<CreateBucketError>> {
+        async fn create_bucket(
+            &self,
+            _input: CreateBucketRequest,
+        ) -> Result<CreateBucketOutput, RusotoError<CreateBucketError>> {
             unimplemented!()
         }
 
-        async fn create_multipart_upload(&self, _input: CreateMultipartUploadRequest) -> Result<CreateMultipartUploadOutput, RusotoError<CreateMultipartUploadError>> {
+        async fn create_multipart_upload(
+            &self,
+            _input: CreateMultipartUploadRequest,
+        ) -> Result<CreateMultipartUploadOutput, RusotoError<CreateMultipartUploadError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket(&self, _input: DeleteBucketRequest) -> Result<(), RusotoError<DeleteBucketError>> {
+        async fn delete_bucket(
+            &self,
+            _input: DeleteBucketRequest,
+        ) -> Result<(), RusotoError<DeleteBucketError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_analytics_configuration(&self, _input: DeleteBucketAnalyticsConfigurationRequest) -> Result<(), RusotoError<DeleteBucketAnalyticsConfigurationError>> {
+        async fn delete_bucket_analytics_configuration(
+            &self,
+            _input: DeleteBucketAnalyticsConfigurationRequest,
+        ) -> Result<(), RusotoError<DeleteBucketAnalyticsConfigurationError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_cors(&self, _input: DeleteBucketCorsRequest) -> Result<(), RusotoError<DeleteBucketCorsError>> {
+        async fn delete_bucket_cors(
+            &self,
+            _input: DeleteBucketCorsRequest,
+        ) -> Result<(), RusotoError<DeleteBucketCorsError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_encryption(&self, _input: DeleteBucketEncryptionRequest) -> Result<(), RusotoError<DeleteBucketEncryptionError>> {
+        async fn delete_bucket_encryption(
+            &self,
+            _input: DeleteBucketEncryptionRequest,
+        ) -> Result<(), RusotoError<DeleteBucketEncryptionError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_inventory_configuration(&self, _input: DeleteBucketInventoryConfigurationRequest) -> Result<(), RusotoError<DeleteBucketInventoryConfigurationError>> {
+        async fn delete_bucket_inventory_configuration(
+            &self,
+            _input: DeleteBucketInventoryConfigurationRequest,
+        ) -> Result<(), RusotoError<DeleteBucketInventoryConfigurationError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_lifecycle(&self, _input: DeleteBucketLifecycleRequest) -> Result<(), RusotoError<DeleteBucketLifecycleError>> {
+        async fn delete_bucket_lifecycle(
+            &self,
+            _input: DeleteBucketLifecycleRequest,
+        ) -> Result<(), RusotoError<DeleteBucketLifecycleError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_metrics_configuration(&self, _input: DeleteBucketMetricsConfigurationRequest) -> Result<(), RusotoError<DeleteBucketMetricsConfigurationError>> {
+        async fn delete_bucket_metrics_configuration(
+            &self,
+            _input: DeleteBucketMetricsConfigurationRequest,
+        ) -> Result<(), RusotoError<DeleteBucketMetricsConfigurationError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_policy(&self, _input: DeleteBucketPolicyRequest) -> Result<(), RusotoError<DeleteBucketPolicyError>> {
+        async fn delete_bucket_policy(
+            &self,
+            _input: DeleteBucketPolicyRequest,
+        ) -> Result<(), RusotoError<DeleteBucketPolicyError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_replication(&self, _input: DeleteBucketReplicationRequest) -> Result<(), RusotoError<DeleteBucketReplicationError>> {
+        async fn delete_bucket_replication(
+            &self,
+            _input: DeleteBucketReplicationRequest,
+        ) -> Result<(), RusotoError<DeleteBucketReplicationError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_tagging(&self, _input: DeleteBucketTaggingRequest) -> Result<(), RusotoError<DeleteBucketTaggingError>> {
+        async fn delete_bucket_tagging(
+            &self,
+            _input: DeleteBucketTaggingRequest,
+        ) -> Result<(), RusotoError<DeleteBucketTaggingError>> {
             unimplemented!()
         }
 
-        async fn delete_bucket_website(&self, _input: DeleteBucketWebsiteRequest) -> Result<(), RusotoError<DeleteBucketWebsiteError>> {
+        async fn delete_bucket_website(
+            &self,
+            _input: DeleteBucketWebsiteRequest,
+        ) -> Result<(), RusotoError<DeleteBucketWebsiteError>> {
             unimplemented!()
         }
 
-        async fn delete_object(&self, _input: DeleteObjectRequest) -> Result<DeleteObjectOutput, RusotoError<DeleteObjectError>> {
+        async fn delete_object(
+            &self,
+            _input: DeleteObjectRequest,
+        ) -> Result<DeleteObjectOutput, RusotoError<DeleteObjectError>> {
             unimplemented!()
         }
 
-        async fn delete_object_tagging(&self, _input: DeleteObjectTaggingRequest) -> Result<DeleteObjectTaggingOutput, RusotoError<DeleteObjectTaggingError>> {
+        async fn delete_object_tagging(
+            &self,
+            _input: DeleteObjectTaggingRequest,
+        ) -> Result<DeleteObjectTaggingOutput, RusotoError<DeleteObjectTaggingError>> {
             unimplemented!()
         }
 
-        async fn delete_objects(&self, _input: DeleteObjectsRequest) -> Result<DeleteObjectsOutput, RusotoError<DeleteObjectsError>> {
+        async fn delete_objects(
+            &self,
+            _input: DeleteObjectsRequest,
+        ) -> Result<DeleteObjectsOutput, RusotoError<DeleteObjectsError>> {
             unimplemented!()
         }
 
-        async fn delete_public_access_block(&self, _input: DeletePublicAccessBlockRequest) -> Result<(), RusotoError<DeletePublicAccessBlockError>> {
+        async fn delete_public_access_block(
+            &self,
+            _input: DeletePublicAccessBlockRequest,
+        ) -> Result<(), RusotoError<DeletePublicAccessBlockError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_accelerate_configuration(&self, _input: GetBucketAccelerateConfigurationRequest) -> Result<GetBucketAccelerateConfigurationOutput, RusotoError<GetBucketAccelerateConfigurationError>> {
+        async fn get_bucket_accelerate_configuration(
+            &self,
+            _input: GetBucketAccelerateConfigurationRequest,
+        ) -> Result<
+            GetBucketAccelerateConfigurationOutput,
+            RusotoError<GetBucketAccelerateConfigurationError>,
+        > {
             unimplemented!()
         }
 
-        async fn get_bucket_acl(&self, _input: GetBucketAclRequest) -> Result<GetBucketAclOutput, RusotoError<GetBucketAclError>> {
+        async fn get_bucket_acl(
+            &self,
+            _input: GetBucketAclRequest,
+        ) -> Result<GetBucketAclOutput, RusotoError<GetBucketAclError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_analytics_configuration(&self, _input: GetBucketAnalyticsConfigurationRequest) -> Result<GetBucketAnalyticsConfigurationOutput, RusotoError<GetBucketAnalyticsConfigurationError>> {
+        async fn get_bucket_analytics_configuration(
+            &self,
+            _input: GetBucketAnalyticsConfigurationRequest,
+        ) -> Result<
+            GetBucketAnalyticsConfigurationOutput,
+            RusotoError<GetBucketAnalyticsConfigurationError>,
+        > {
             unimplemented!()
         }
 
-        async fn get_bucket_cors(&self, _input: GetBucketCorsRequest) -> Result<GetBucketCorsOutput, RusotoError<GetBucketCorsError>> {
+        async fn get_bucket_cors(
+            &self,
+            _input: GetBucketCorsRequest,
+        ) -> Result<GetBucketCorsOutput, RusotoError<GetBucketCorsError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_encryption(&self, _input: GetBucketEncryptionRequest) -> Result<GetBucketEncryptionOutput, RusotoError<GetBucketEncryptionError>> {
+        async fn get_bucket_encryption(
+            &self,
+            _input: GetBucketEncryptionRequest,
+        ) -> Result<GetBucketEncryptionOutput, RusotoError<GetBucketEncryptionError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_inventory_configuration(&self, _input: GetBucketInventoryConfigurationRequest) -> Result<GetBucketInventoryConfigurationOutput, RusotoError<GetBucketInventoryConfigurationError>> {
+        async fn get_bucket_inventory_configuration(
+            &self,
+            _input: GetBucketInventoryConfigurationRequest,
+        ) -> Result<
+            GetBucketInventoryConfigurationOutput,
+            RusotoError<GetBucketInventoryConfigurationError>,
+        > {
             unimplemented!()
         }
 
-        async fn get_bucket_lifecycle(&self, _input: GetBucketLifecycleRequest) -> Result<GetBucketLifecycleOutput, RusotoError<GetBucketLifecycleError>> {
+        async fn get_bucket_lifecycle(
+            &self,
+            _input: GetBucketLifecycleRequest,
+        ) -> Result<GetBucketLifecycleOutput, RusotoError<GetBucketLifecycleError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_lifecycle_configuration(&self, _input: GetBucketLifecycleConfigurationRequest) -> Result<GetBucketLifecycleConfigurationOutput, RusotoError<GetBucketLifecycleConfigurationError>> {
+        async fn get_bucket_lifecycle_configuration(
+            &self,
+            _input: GetBucketLifecycleConfigurationRequest,
+        ) -> Result<
+            GetBucketLifecycleConfigurationOutput,
+            RusotoError<GetBucketLifecycleConfigurationError>,
+        > {
             unimplemented!()
         }
 
-        async fn get_bucket_location(&self, _input: GetBucketLocationRequest) -> Result<GetBucketLocationOutput, RusotoError<GetBucketLocationError>> {
+        async fn get_bucket_location(
+            &self,
+            _input: GetBucketLocationRequest,
+        ) -> Result<GetBucketLocationOutput, RusotoError<GetBucketLocationError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_logging(&self, _input: GetBucketLoggingRequest) -> Result<GetBucketLoggingOutput, RusotoError<GetBucketLoggingError>> {
+        async fn get_bucket_logging(
+            &self,
+            _input: GetBucketLoggingRequest,
+        ) -> Result<GetBucketLoggingOutput, RusotoError<GetBucketLoggingError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_metrics_configuration(&self, _input: GetBucketMetricsConfigurationRequest) -> Result<GetBucketMetricsConfigurationOutput, RusotoError<GetBucketMetricsConfigurationError>> {
+        async fn get_bucket_metrics_configuration(
+            &self,
+            _input: GetBucketMetricsConfigurationRequest,
+        ) -> Result<
+            GetBucketMetricsConfigurationOutput,
+            RusotoError<GetBucketMetricsConfigurationError>,
+        > {
             unimplemented!()
         }
 
-        async fn get_bucket_notification(&self, _input: GetBucketNotificationConfigurationRequest) -> Result<NotificationConfigurationDeprecated, RusotoError<GetBucketNotificationError>> {
+        async fn get_bucket_notification(
+            &self,
+            _input: GetBucketNotificationConfigurationRequest,
+        ) -> Result<NotificationConfigurationDeprecated, RusotoError<GetBucketNotificationError>>
+        {
             unimplemented!()
         }
 
-        async fn get_bucket_notification_configuration(&self, _input: GetBucketNotificationConfigurationRequest) -> Result<NotificationConfiguration, RusotoError<GetBucketNotificationConfigurationError>> {
+        async fn get_bucket_notification_configuration(
+            &self,
+            _input: GetBucketNotificationConfigurationRequest,
+        ) -> Result<NotificationConfiguration, RusotoError<GetBucketNotificationConfigurationError>>
+        {
             unimplemented!()
         }
 
-        async fn get_bucket_policy(&self, _input: GetBucketPolicyRequest) -> Result<GetBucketPolicyOutput, RusotoError<GetBucketPolicyError>> {
+        async fn get_bucket_policy(
+            &self,
+            _input: GetBucketPolicyRequest,
+        ) -> Result<GetBucketPolicyOutput, RusotoError<GetBucketPolicyError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_policy_status(&self, _input: GetBucketPolicyStatusRequest) -> Result<GetBucketPolicyStatusOutput, RusotoError<GetBucketPolicyStatusError>> {
+        async fn get_bucket_policy_status(
+            &self,
+            _input: GetBucketPolicyStatusRequest,
+        ) -> Result<GetBucketPolicyStatusOutput, RusotoError<GetBucketPolicyStatusError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_replication(&self, _input: GetBucketReplicationRequest) -> Result<GetBucketReplicationOutput, RusotoError<GetBucketReplicationError>> {
+        async fn get_bucket_replication(
+            &self,
+            _input: GetBucketReplicationRequest,
+        ) -> Result<GetBucketReplicationOutput, RusotoError<GetBucketReplicationError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_request_payment(&self, _input: GetBucketRequestPaymentRequest) -> Result<GetBucketRequestPaymentOutput, RusotoError<GetBucketRequestPaymentError>> {
+        async fn get_bucket_request_payment(
+            &self,
+            _input: GetBucketRequestPaymentRequest,
+        ) -> Result<GetBucketRequestPaymentOutput, RusotoError<GetBucketRequestPaymentError>>
+        {
             unimplemented!()
         }
 
-        async fn get_bucket_tagging(&self, _input: GetBucketTaggingRequest) -> Result<GetBucketTaggingOutput, RusotoError<GetBucketTaggingError>> {
+        async fn get_bucket_tagging(
+            &self,
+            _input: GetBucketTaggingRequest,
+        ) -> Result<GetBucketTaggingOutput, RusotoError<GetBucketTaggingError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_versioning(&self, _input: GetBucketVersioningRequest) -> Result<GetBucketVersioningOutput, RusotoError<GetBucketVersioningError>> {
+        async fn get_bucket_versioning(
+            &self,
+            _input: GetBucketVersioningRequest,
+        ) -> Result<GetBucketVersioningOutput, RusotoError<GetBucketVersioningError>> {
             unimplemented!()
         }
 
-        async fn get_bucket_website(&self, _input: GetBucketWebsiteRequest) -> Result<GetBucketWebsiteOutput, RusotoError<GetBucketWebsiteError>> {
+        async fn get_bucket_website(
+            &self,
+            _input: GetBucketWebsiteRequest,
+        ) -> Result<GetBucketWebsiteOutput, RusotoError<GetBucketWebsiteError>> {
             unimplemented!()
         }
 
-        async fn get_object(&self, _input: GetObjectRequest) -> Result<GetObjectOutput, RusotoError<GetObjectError>> {
+        async fn get_object(
+            &self,
+            _input: GetObjectRequest,
+        ) -> Result<GetObjectOutput, RusotoError<GetObjectError>> {
             unimplemented!()
         }
 
-        async fn get_object_acl(&self, _input: GetObjectAclRequest) -> Result<GetObjectAclOutput, RusotoError<GetObjectAclError>> {
+        async fn get_object_acl(
+            &self,
+            _input: GetObjectAclRequest,
+        ) -> Result<GetObjectAclOutput, RusotoError<GetObjectAclError>> {
             unimplemented!()
         }
 
-        async fn get_object_legal_hold(&self, _input: GetObjectLegalHoldRequest) -> Result<GetObjectLegalHoldOutput, RusotoError<GetObjectLegalHoldError>> {
+        async fn get_object_legal_hold(
+            &self,
+            _input: GetObjectLegalHoldRequest,
+        ) -> Result<GetObjectLegalHoldOutput, RusotoError<GetObjectLegalHoldError>> {
             unimplemented!()
         }
 
-        async fn get_object_lock_configuration(&self, _input: GetObjectLockConfigurationRequest) -> Result<GetObjectLockConfigurationOutput, RusotoError<GetObjectLockConfigurationError>> {
+        async fn get_object_lock_configuration(
+            &self,
+            _input: GetObjectLockConfigurationRequest,
+        ) -> Result<GetObjectLockConfigurationOutput, RusotoError<GetObjectLockConfigurationError>>
+        {
             unimplemented!()
         }
 
-        async fn get_object_retention(&self, _input: GetObjectRetentionRequest) -> Result<GetObjectRetentionOutput, RusotoError<GetObjectRetentionError>> {
+        async fn get_object_retention(
+            &self,
+            _input: GetObjectRetentionRequest,
+        ) -> Result<GetObjectRetentionOutput, RusotoError<GetObjectRetentionError>> {
             unimplemented!()
         }
 
-        async fn get_object_tagging(&self, _input: GetObjectTaggingRequest) -> Result<GetObjectTaggingOutput, RusotoError<GetObjectTaggingError>> {
+        async fn get_object_tagging(
+            &self,
+            _input: GetObjectTaggingRequest,
+        ) -> Result<GetObjectTaggingOutput, RusotoError<GetObjectTaggingError>> {
             unimplemented!()
         }
 
-        async fn get_object_torrent(&self, _input: GetObjectTorrentRequest) -> Result<GetObjectTorrentOutput, RusotoError<GetObjectTorrentError>> {
+        async fn get_object_torrent(
+            &self,
+            _input: GetObjectTorrentRequest,
+        ) -> Result<GetObjectTorrentOutput, RusotoError<GetObjectTorrentError>> {
             unimplemented!()
         }
 
-        async fn get_public_access_block(&self, _input: GetPublicAccessBlockRequest) -> Result<GetPublicAccessBlockOutput, RusotoError<GetPublicAccessBlockError>> {
+        async fn get_public_access_block(
+            &self,
+            _input: GetPublicAccessBlockRequest,
+        ) -> Result<GetPublicAccessBlockOutput, RusotoError<GetPublicAccessBlockError>> {
             unimplemented!()
         }
 
-        async fn head_bucket(&self, _input: HeadBucketRequest) -> Result<(), RusotoError<HeadBucketError>> {
+        async fn head_bucket(
+            &self,
+            _input: HeadBucketRequest,
+        ) -> Result<(), RusotoError<HeadBucketError>> {
             unimplemented!()
         }
 
-        async fn head_object(&self, _input: HeadObjectRequest) -> Result<HeadObjectOutput, RusotoError<HeadObjectError>> {
+        async fn head_object(
+            &self,
+            _input: HeadObjectRequest,
+        ) -> Result<HeadObjectOutput, RusotoError<HeadObjectError>> {
             unimplemented!()
         }
 
-        async fn list_bucket_analytics_configurations(&self, _input: ListBucketAnalyticsConfigurationsRequest) -> Result<ListBucketAnalyticsConfigurationsOutput, RusotoError<ListBucketAnalyticsConfigurationsError>> {
+        async fn list_bucket_analytics_configurations(
+            &self,
+            _input: ListBucketAnalyticsConfigurationsRequest,
+        ) -> Result<
+            ListBucketAnalyticsConfigurationsOutput,
+            RusotoError<ListBucketAnalyticsConfigurationsError>,
+        > {
             unimplemented!()
         }
 
-        async fn list_bucket_inventory_configurations(&self, _input: ListBucketInventoryConfigurationsRequest) -> Result<ListBucketInventoryConfigurationsOutput, RusotoError<ListBucketInventoryConfigurationsError>> {
+        async fn list_bucket_inventory_configurations(
+            &self,
+            _input: ListBucketInventoryConfigurationsRequest,
+        ) -> Result<
+            ListBucketInventoryConfigurationsOutput,
+            RusotoError<ListBucketInventoryConfigurationsError>,
+        > {
             unimplemented!()
         }
 
-        async fn list_bucket_metrics_configurations(&self, _input: ListBucketMetricsConfigurationsRequest) -> Result<ListBucketMetricsConfigurationsOutput, RusotoError<ListBucketMetricsConfigurationsError>> {
+        async fn list_bucket_metrics_configurations(
+            &self,
+            _input: ListBucketMetricsConfigurationsRequest,
+        ) -> Result<
+            ListBucketMetricsConfigurationsOutput,
+            RusotoError<ListBucketMetricsConfigurationsError>,
+        > {
             unimplemented!()
         }
 
@@ -606,144 +904,246 @@ mod tests {
             unimplemented!()
         }
 
-        async fn list_multipart_uploads(&self, _input: ListMultipartUploadsRequest) -> Result<ListMultipartUploadsOutput, RusotoError<ListMultipartUploadsError>> {
+        async fn list_multipart_uploads(
+            &self,
+            _input: ListMultipartUploadsRequest,
+        ) -> Result<ListMultipartUploadsOutput, RusotoError<ListMultipartUploadsError>> {
             unimplemented!()
         }
 
-        async fn list_object_versions(&self, _input: ListObjectVersionsRequest) -> Result<ListObjectVersionsOutput, RusotoError<ListObjectVersionsError>> {
+        async fn list_object_versions(
+            &self,
+            _input: ListObjectVersionsRequest,
+        ) -> Result<ListObjectVersionsOutput, RusotoError<ListObjectVersionsError>> {
             unimplemented!()
         }
 
-        async fn list_objects(&self, _input: ListObjectsRequest) -> Result<ListObjectsOutput, RusotoError<ListObjectsError>> {
+        async fn list_objects(
+            &self,
+            _input: ListObjectsRequest,
+        ) -> Result<ListObjectsOutput, RusotoError<ListObjectsError>> {
             unimplemented!()
         }
 
-        async fn list_objects_v2(&self, _input: ListObjectsV2Request) -> Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>> {
+        async fn list_objects_v2(
+            &self,
+            _input: ListObjectsV2Request,
+        ) -> Result<ListObjectsV2Output, RusotoError<ListObjectsV2Error>> {
             unimplemented!()
         }
 
-        async fn list_parts(&self, _input: ListPartsRequest) -> Result<ListPartsOutput, RusotoError<ListPartsError>> {
+        async fn list_parts(
+            &self,
+            _input: ListPartsRequest,
+        ) -> Result<ListPartsOutput, RusotoError<ListPartsError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_accelerate_configuration(&self, _input: PutBucketAccelerateConfigurationRequest) -> Result<(), RusotoError<PutBucketAccelerateConfigurationError>> {
+        async fn put_bucket_accelerate_configuration(
+            &self,
+            _input: PutBucketAccelerateConfigurationRequest,
+        ) -> Result<(), RusotoError<PutBucketAccelerateConfigurationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_acl(&self, _input: PutBucketAclRequest) -> Result<(), RusotoError<PutBucketAclError>> {
+        async fn put_bucket_acl(
+            &self,
+            _input: PutBucketAclRequest,
+        ) -> Result<(), RusotoError<PutBucketAclError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_analytics_configuration(&self, _input: PutBucketAnalyticsConfigurationRequest) -> Result<(), RusotoError<PutBucketAnalyticsConfigurationError>> {
+        async fn put_bucket_analytics_configuration(
+            &self,
+            _input: PutBucketAnalyticsConfigurationRequest,
+        ) -> Result<(), RusotoError<PutBucketAnalyticsConfigurationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_cors(&self, _input: PutBucketCorsRequest) -> Result<(), RusotoError<PutBucketCorsError>> {
+        async fn put_bucket_cors(
+            &self,
+            _input: PutBucketCorsRequest,
+        ) -> Result<(), RusotoError<PutBucketCorsError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_encryption(&self, _input: PutBucketEncryptionRequest) -> Result<(), RusotoError<PutBucketEncryptionError>> {
+        async fn put_bucket_encryption(
+            &self,
+            _input: PutBucketEncryptionRequest,
+        ) -> Result<(), RusotoError<PutBucketEncryptionError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_inventory_configuration(&self, _input: PutBucketInventoryConfigurationRequest) -> Result<(), RusotoError<PutBucketInventoryConfigurationError>> {
+        async fn put_bucket_inventory_configuration(
+            &self,
+            _input: PutBucketInventoryConfigurationRequest,
+        ) -> Result<(), RusotoError<PutBucketInventoryConfigurationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_lifecycle(&self, _input: PutBucketLifecycleRequest) -> Result<(), RusotoError<PutBucketLifecycleError>> {
+        async fn put_bucket_lifecycle(
+            &self,
+            _input: PutBucketLifecycleRequest,
+        ) -> Result<(), RusotoError<PutBucketLifecycleError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_lifecycle_configuration(&self, _input: PutBucketLifecycleConfigurationRequest) -> Result<(), RusotoError<PutBucketLifecycleConfigurationError>> {
+        async fn put_bucket_lifecycle_configuration(
+            &self,
+            _input: PutBucketLifecycleConfigurationRequest,
+        ) -> Result<(), RusotoError<PutBucketLifecycleConfigurationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_logging(&self, _input: PutBucketLoggingRequest) -> Result<(), RusotoError<PutBucketLoggingError>> {
+        async fn put_bucket_logging(
+            &self,
+            _input: PutBucketLoggingRequest,
+        ) -> Result<(), RusotoError<PutBucketLoggingError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_metrics_configuration(&self, _input: PutBucketMetricsConfigurationRequest) -> Result<(), RusotoError<PutBucketMetricsConfigurationError>> {
+        async fn put_bucket_metrics_configuration(
+            &self,
+            _input: PutBucketMetricsConfigurationRequest,
+        ) -> Result<(), RusotoError<PutBucketMetricsConfigurationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_notification(&self, _input: PutBucketNotificationRequest) -> Result<(), RusotoError<PutBucketNotificationError>> {
+        async fn put_bucket_notification(
+            &self,
+            _input: PutBucketNotificationRequest,
+        ) -> Result<(), RusotoError<PutBucketNotificationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_notification_configuration(&self, _input: PutBucketNotificationConfigurationRequest) -> Result<(), RusotoError<PutBucketNotificationConfigurationError>> {
+        async fn put_bucket_notification_configuration(
+            &self,
+            _input: PutBucketNotificationConfigurationRequest,
+        ) -> Result<(), RusotoError<PutBucketNotificationConfigurationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_policy(&self, _input: PutBucketPolicyRequest) -> Result<(), RusotoError<PutBucketPolicyError>> {
+        async fn put_bucket_policy(
+            &self,
+            _input: PutBucketPolicyRequest,
+        ) -> Result<(), RusotoError<PutBucketPolicyError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_replication(&self, _input: PutBucketReplicationRequest) -> Result<(), RusotoError<PutBucketReplicationError>> {
+        async fn put_bucket_replication(
+            &self,
+            _input: PutBucketReplicationRequest,
+        ) -> Result<(), RusotoError<PutBucketReplicationError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_request_payment(&self, _input: PutBucketRequestPaymentRequest) -> Result<(), RusotoError<PutBucketRequestPaymentError>> {
+        async fn put_bucket_request_payment(
+            &self,
+            _input: PutBucketRequestPaymentRequest,
+        ) -> Result<(), RusotoError<PutBucketRequestPaymentError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_tagging(&self, _input: PutBucketTaggingRequest) -> Result<(), RusotoError<PutBucketTaggingError>> {
+        async fn put_bucket_tagging(
+            &self,
+            _input: PutBucketTaggingRequest,
+        ) -> Result<(), RusotoError<PutBucketTaggingError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_versioning(&self, _input: PutBucketVersioningRequest) -> Result<(), RusotoError<PutBucketVersioningError>> {
+        async fn put_bucket_versioning(
+            &self,
+            _input: PutBucketVersioningRequest,
+        ) -> Result<(), RusotoError<PutBucketVersioningError>> {
             unimplemented!()
         }
 
-        async fn put_bucket_website(&self, _input: PutBucketWebsiteRequest) -> Result<(), RusotoError<PutBucketWebsiteError>> {
+        async fn put_bucket_website(
+            &self,
+            _input: PutBucketWebsiteRequest,
+        ) -> Result<(), RusotoError<PutBucketWebsiteError>> {
             unimplemented!()
         }
 
-        async fn put_object(&self, input: PutObjectRequest) -> Result<PutObjectOutput, RusotoError<PutObjectError>> {
+        async fn put_object(
+            &self,
+            input: PutObjectRequest,
+        ) -> Result<PutObjectOutput, RusotoError<PutObjectError>> {
             self.puts.lock().unwrap().borrow_mut().push(input);
             Ok(PutObjectOutput::default())
         }
 
-        async fn put_object_acl(&self, _input: PutObjectAclRequest) -> Result<PutObjectAclOutput, RusotoError<PutObjectAclError>> {
+        async fn put_object_acl(
+            &self,
+            _input: PutObjectAclRequest,
+        ) -> Result<PutObjectAclOutput, RusotoError<PutObjectAclError>> {
             unimplemented!()
         }
 
-        async fn put_object_legal_hold(&self, _input: PutObjectLegalHoldRequest) -> Result<PutObjectLegalHoldOutput, RusotoError<PutObjectLegalHoldError>> {
+        async fn put_object_legal_hold(
+            &self,
+            _input: PutObjectLegalHoldRequest,
+        ) -> Result<PutObjectLegalHoldOutput, RusotoError<PutObjectLegalHoldError>> {
             unimplemented!()
         }
 
-        async fn put_object_lock_configuration(&self, _input: PutObjectLockConfigurationRequest) -> Result<PutObjectLockConfigurationOutput, RusotoError<PutObjectLockConfigurationError>> {
+        async fn put_object_lock_configuration(
+            &self,
+            _input: PutObjectLockConfigurationRequest,
+        ) -> Result<PutObjectLockConfigurationOutput, RusotoError<PutObjectLockConfigurationError>>
+        {
             unimplemented!()
         }
 
-        async fn put_object_retention(&self, _input: PutObjectRetentionRequest) -> Result<PutObjectRetentionOutput, RusotoError<PutObjectRetentionError>> {
+        async fn put_object_retention(
+            &self,
+            _input: PutObjectRetentionRequest,
+        ) -> Result<PutObjectRetentionOutput, RusotoError<PutObjectRetentionError>> {
             unimplemented!()
         }
 
-        async fn put_object_tagging(&self, _input: PutObjectTaggingRequest) -> Result<PutObjectTaggingOutput, RusotoError<PutObjectTaggingError>> {
+        async fn put_object_tagging(
+            &self,
+            _input: PutObjectTaggingRequest,
+        ) -> Result<PutObjectTaggingOutput, RusotoError<PutObjectTaggingError>> {
             unimplemented!()
         }
 
-        async fn put_public_access_block(&self, _input: PutPublicAccessBlockRequest) -> Result<(), RusotoError<PutPublicAccessBlockError>> {
+        async fn put_public_access_block(
+            &self,
+            _input: PutPublicAccessBlockRequest,
+        ) -> Result<(), RusotoError<PutPublicAccessBlockError>> {
             unimplemented!()
         }
 
-        async fn restore_object(&self, _input: RestoreObjectRequest) -> Result<RestoreObjectOutput, RusotoError<RestoreObjectError>> {
+        async fn restore_object(
+            &self,
+            _input: RestoreObjectRequest,
+        ) -> Result<RestoreObjectOutput, RusotoError<RestoreObjectError>> {
             unimplemented!()
         }
 
-        async fn select_object_content(&self, _input: SelectObjectContentRequest) -> Result<SelectObjectContentOutput, RusotoError<SelectObjectContentError>> {
+        async fn select_object_content(
+            &self,
+            _input: SelectObjectContentRequest,
+        ) -> Result<SelectObjectContentOutput, RusotoError<SelectObjectContentError>> {
             unimplemented!()
         }
 
-        async fn upload_part(&self, _input: UploadPartRequest) -> Result<UploadPartOutput, RusotoError<UploadPartError>> {
+        async fn upload_part(
+            &self,
+            _input: UploadPartRequest,
+        ) -> Result<UploadPartOutput, RusotoError<UploadPartError>> {
             unimplemented!()
         }
 
-        async fn upload_part_copy(&self, _input: UploadPartCopyRequest) -> Result<UploadPartCopyOutput, RusotoError<UploadPartCopyError>> {
+        async fn upload_part_copy(
+            &self,
+            _input: UploadPartCopyRequest,
+        ) -> Result<UploadPartCopyOutput, RusotoError<UploadPartCopyError>> {
             unimplemented!()
         }
     }
-
 
     #[test]
     fn it_works() {
@@ -756,19 +1156,25 @@ mod tests {
                 .bucket("mybucky")
                 .s3_client(s3_client)
                 .handle(rt.handle().clone())
-            .build()
+                .build()
                 .unwrap();
 
             let data = ("12345678".to_owned().repeat(1024)).into_bytes();
             let len = data.len();
-            let req = BatchPutObjectRequest { name: "test.txt".to_string(), body: data };
+            let req = BatchPutObjectRequest {
+                name: "test.txt".to_string(),
+                body: data,
+            };
             let put_ref = client.put_object(req).unwrap();
             assert_eq!(0, put_ref.offset_bytes);
             assert_eq!(len, put_ref.size_bytes);
 
             let data = "data-driven beard".to_owned().into_bytes();
             let len = data.len();
-            let req = BatchPutObjectRequest { name: "data.log".to_string(), body: data };
+            let req = BatchPutObjectRequest {
+                name: "data.log".to_string(),
+                body: data,
+            };
             let put_ref = client.put_object(req).unwrap();
             assert_eq!(8704, put_ref.offset_bytes);
             assert_eq!(len, put_ref.size_bytes);
