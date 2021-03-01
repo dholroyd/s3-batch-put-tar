@@ -1,11 +1,10 @@
 use log::*;
 use rusoto_core::RusotoError;
-use rusoto_s3;
+
 use serde_derive::Serialize;
 use std::io;
 use std::io::{Read, Seek};
 use std::sync::mpsc::TrySendError;
-use tar;
 
 struct Batch<W: io::Write + io::Seek> {
     start_time_ms: u64,
@@ -179,11 +178,13 @@ impl<Client: rusoto_s3::S3> BatchProcessor<Client> {
             file.seek(std::io::SeekFrom::Start(0))?;
             let mut all = vec![];
             file.read_to_end(&mut all)?; // FIXME: stream the file rather than loading into memory - https://stackoverflow.com/questions/57810173/streamed-upload-to-s3-with-rusoto
-            let mut req = rusoto_s3::PutObjectRequest::default();
-            req.body = Some(rusoto_s3::StreamingBody::from(all));
-            req.bucket = self.bucket.clone();
-            req.key = format!("{}{:}.tar", self.key_prefix, start_time_ms);
-            req.storage_class = self.storage_class.clone();
+            let req = rusoto_s3::PutObjectRequest {
+                body: Some(rusoto_s3::StreamingBody::from(all)),
+                bucket: self.bucket.clone(),
+                key: format!("{}{:}.tar", self.key_prefix, start_time_ms),
+                storage_class: self.storage_class.clone(),
+                ..Default::default()
+            };
             match self.client.put_object(req).await {
                 Ok(_output) => return Ok(()),
                 Err(e) => {
@@ -245,11 +246,9 @@ impl Coalesce {
 
         if self.last_batch_id.is_none() {
             self.last_batch_id = Some(this_batch_id);
-        } else {
-            if *self.last_batch_id.as_ref().unwrap() < this_batch_id {
-                self.next_write_offset_bytes = 0;
-                self.last_batch_id = Some(this_batch_id);
-            }
+        } else if *self.last_batch_id.as_ref().unwrap() < this_batch_id {
+            self.next_write_offset_bytes = 0;
+            self.last_batch_id = Some(this_batch_id);
         }
         let size = input.body.len();
         let put_ref = BatchObjectRef {
@@ -376,18 +375,18 @@ impl<Client: rusoto_s3::S3 + Send + 'static> ClientBuilder<Client> {
         let proc = BatchProcessor::new(
             rx,
             self.batch_duration
-                .ok_or_else(|| BuildError::MissingBatchDuration)? as _,
-            self.client.ok_or_else(|| BuildError::MissingS3Client)?,
-            self.bucket.ok_or_else(|| BuildError::MissingBucket)?,
-            self.key_prefix.unwrap_or("".to_string()),
-            self.rt.ok_or_else(|| BuildError::MissingRuntime)?,
+                .ok_or(BuildError::MissingBatchDuration)? as _,
+            self.client.ok_or(BuildError::MissingS3Client)?,
+            self.bucket.ok_or(BuildError::MissingBucket)?,
+            self.key_prefix.unwrap_or_else(|| "".to_string()),
+            self.rt.ok_or(BuildError::MissingRuntime)?,
             self.storage_class,
         );
         std::thread::spawn(|| proc.process());
         let client = S3BatchPutClient {
             inner: std::sync::Arc::new(std::sync::Mutex::new(Coalesce::new(
                 self.batch_duration
-                    .ok_or_else(|| BuildError::MissingBatchDuration)? as _,
+                    .ok_or(BuildError::MissingBatchDuration)? as _,
                 tx,
             ))),
         };
